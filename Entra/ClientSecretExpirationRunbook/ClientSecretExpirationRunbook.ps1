@@ -1,11 +1,11 @@
 <#
     .SYNOPSIS
-    Monitors Azure App Registrations for expiring secrets and alerts via Gmail API.
+    Monitors Azure App Registrations for expiring secrets and certificates and alerts via Gmail API.
     .DESCRIPTION
     1. Connects to MS Graph via System-Assigned Managed Identity.
-    2. Scans ALL apps (paginated) for secrets expiring in <30 days.
+    2. Scans ALL apps (paginated) for secrets and certificates expiring in <30 days.
     3. Authenticates to Google via Refresh Token + Client Secret.
-    4. Sends an HTML email report if secrets are found.
+    4. Sends an HTML email report if secrets or certificates are found.
 #>
 
 # ==============================================================================
@@ -69,24 +69,53 @@ do {
     Write-Output "   Processing batch of $($appsList.Count) apps..."
 
     foreach ($app in $appsList) {
-        # Fetch credentials for this specific app
-        $credUri = "https://graph.microsoft.com/v1.0/applications/$($app.id)/passwordCredentials"
+        # Fetch client secrets (passwordCredentials) for this specific app
+        $secretUri = "https://graph.microsoft.com/v1.0/applications/$($app.id)/passwordCredentials"
         
         try {
-            $credsResponse = Invoke-RestMethod -Uri $credUri -Headers $headers -Method GET -ErrorAction Stop
+            $secretsResponse = Invoke-RestMethod -Uri $secretUri -Headers $headers -Method GET -ErrorAction Stop
             
-            foreach ($secret in $credsResponse.value) {
+            foreach ($secret in $secretsResponse.value) {
                 $endDate  = [datetime]$secret.endDateTime
                 $daysLeft = ($endDate - $today).Days
 
                 # Check expiration (Alert if within threshold, ignore if already expired > 10 days ago)
                 if ($daysLeft -le $DaysThreshold -and $daysLeft -ge -10) {
-                    Write-Output "   [!] ALERT: $($app.displayName) expires in $daysLeft days"
+                    Write-Output "   [!] ALERT: $($app.displayName) secret expires in $daysLeft days"
                     $expiringApps += [PSCustomObject]@{
                         Name     = $app.displayName
                         Days     = $daysLeft
                         Date     = $endDate
                         AppId    = $app.appId
+                        Type     = "Client Secret"
+                    }
+                }
+            }
+        }
+        catch {
+            # Permission errors on specific MS-managed apps are normal/expected
+            continue 
+        }
+
+        # Fetch certificates (keyCredentials) for this specific app
+        $certUri = "https://graph.microsoft.com/v1.0/applications/$($app.id)/keyCredentials"
+        
+        try {
+            $certsResponse = Invoke-RestMethod -Uri $certUri -Headers $headers -Method GET -ErrorAction Stop
+            
+            foreach ($cert in $certsResponse.value) {
+                $endDate  = [datetime]$cert.endDateTime
+                $daysLeft = ($endDate - $today).Days
+
+                # Check expiration (Alert if within threshold, ignore if already expired > 10 days ago)
+                if ($daysLeft -le $DaysThreshold -and $daysLeft -ge -10) {
+                    Write-Output "   [!] ALERT: $($app.displayName) certificate expires in $daysLeft days"
+                    $expiringApps += [PSCustomObject]@{
+                        Name     = $app.displayName
+                        Days     = $daysLeft
+                        Date     = $endDate
+                        AppId    = $app.appId
+                        Type     = "Certificate"
                     }
                 }
             }
@@ -108,7 +137,7 @@ do {
 
 Write-Output "--------------------------------------------------"
 Write-Output "Scan Complete. Total Scanned: $totalAppsScanned"
-Write-Output "Expiring Secrets Found: $($expiringApps.Count)"
+Write-Output "Expiring Credentials Found: $($expiringApps.Count)"
 Write-Output "--------------------------------------------------"
 
 if ($expiringApps.Count -eq 0) {
@@ -149,18 +178,19 @@ Write-Output "4. Sending Email Report..."
 $listHtml = ""
 foreach ($item in $expiringApps) {
     $color = if($item.Days -lt 7){"red"}else{"#e65100"} # Red for urgent, Orange for warning
-    $listHtml += "<li style='margin-bottom: 5px;'><strong style='color:$color'>$($item.Name)</strong><br>Expires in <b>$($item.Days) days</b> ($($item.Date))<br><span style='font-size:12px;color:gray'>App ID: $($item.AppId)</span></li>"
+    $typeIcon = if($item.Type -eq "Certificate"){"🔐"}else{"🔑"}
+    $listHtml += "<li style='margin-bottom: 5px;'>$typeIcon <strong style='color:$color'>$($item.Name)</strong><br><span style='font-size:13px;'><b>$($item.Type)</b> expires in <b>$($item.Days) days</b> ($($item.Date))</span><br><span style='font-size:12px;color:gray'>App ID: $($item.AppId)</span></li>"
 }
 
 $htmlBody = @"
 <html>
 <body style="font-family: Segoe UI, Helvetica, Arial, sans-serif; color: #333;">
-    <h3 style="color: #d32f2f;">⚠️ Azure Secret Expiration Warning</h3>
-    <p>The following applications have client secrets expiring within <strong>$DaysThreshold days</strong>:</p>
+    <h3 style="color: #d32f2f;">⚠️ Azure Credential Expiration Warning</h3>
+    <p>The following applications have client secrets or certificates expiring within <strong>$DaysThreshold days</strong>:</p>
     <ul>
         $listHtml
     </ul>
-    <p>Please log in to the <a href="https://portal.azure.com/#view/Microsoft_AAD_IAM/ActiveDirectoryMenuBlade/~/RegisteredApps">Azure Portal</a> to rotate these keys.</p>
+    <p>Please log in to the <a href="https://portal.azure.com/#view/Microsoft_AAD_IAM/ActiveDirectoryMenuBlade/~/RegisteredApps">Azure Portal</a> to rotate these credentials.</p>
     <hr>
     <p style="font-size: 12px; color: gray;">Generated by Azure Automation • Scanned $totalAppsScanned apps</p>
 </body>
@@ -170,7 +200,7 @@ $htmlBody = @"
 # Construct MIME Message
 $mimeMessage = "From: $SenderEmail`r`n"
 $mimeMessage += "To: $RecipientEmail`r`n"
-$mimeMessage += "Subject: Action Required: Azure Secrets Expiring ($($expiringApps.Count))`r`n"
+$mimeMessage += "Subject: Action Required: Azure Credentials Expiring ($($expiringApps.Count))`r`n"
 $mimeMessage += "Content-Type: text/html; charset=utf-8`r`n`r`n"
 $mimeMessage += "$htmlBody"
 

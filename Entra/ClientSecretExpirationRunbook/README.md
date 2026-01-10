@@ -1,6 +1,6 @@
-# Azure App Registration Secret Monitor & Alerter
+# Azure App Registration Secret & Certificate Monitor & Alerter
 
-When expiring secrets are detected (e.g., within 30 days), it sends an email alert to a specified administrator. This solution utilized the **Gmail API** to send all messages for those of us in a Gmail-only environment.
+When expiring secrets or certificates are detected (e.g., within 30 days), it sends an email alert to a specified administrator. This solution utilized the **Gmail API** to send all messages for those of us in a Gmail-only environment.
  
 ## Architecture
 
@@ -120,7 +120,7 @@ Write-Host "Permission 'Application.Read.All' granted successfully."
 
 * **Azure Login:** The script executes `Connect-AzAccount -Identity`. It uses the System-Assigned Identity to authenticate to Azure without managing credentials.
 * **Scan:** It queries Microsoft Graph (`/applications`) using pagination to retrieve all App Registrations.
-* **Filter:** It checks the `passwordCredentials` of every app. If `endDateTime` is within the `$DaysThreshold` (default 30 days), it adds the app to the alert list.
+* **Filter:** It checks both the `passwordCredentials` (client secrets) and `keyCredentials` (certificates) of every app. If `endDateTime` is within the `$DaysThreshold` (default 30 days), it adds the credential to the alert list.
 * **Google Login:** It takes the stored `GoogleRefreshToken` and exchanges it for a temporary Access Token via `oauth2.googleapis.com/token`.
 * **Alert:** It constructs a MIME email message (HTML) and sends it using the Gmail API (`users/me/messages/send`).
 
